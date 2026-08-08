@@ -1,6 +1,20 @@
 import os
 import datetime
 import base64
+
+import asyncio
+
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    # Safely creates and sets a loop if Python 3.14 didn't auto-create one
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# Your existing code starts here
+import streamlit as st
+# ... remainder of your code
+
 import streamlit as st
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -9,7 +23,13 @@ from googleapiclient.discovery import build
 from google.genai import Client
 
 # Gmail API Scopes
-SCOPES = ['https://googleapis.com']
+# Minimal scopes for reading and modifying (archive/mark) emails
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+]
+
+
 
 def authenticate_gmail():
     """Authenticates the user and returns a Gmail API service instance."""
@@ -91,13 +111,24 @@ def extract_action_items(emails, api_key):
     Format your response in clean Markdown with checkboxes (- [ ]) for each individual action item. Include deadlines if mentioned.
     """
     
+    # Configure model name here. Replace with a model available to your account if needed.
+    MODEL_NAME = 'models/gemini-3-flash-preview'
+
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=MODEL_NAME,
             contents=prompt,
         )
         return response.text
     except Exception as e:
+        err = str(e)
+        if 'no longer available' in err or 'NOT_FOUND' in err or '404' in err:
+            st.error(
+                f"Model {MODEL_NAME} is not available to your account: {e}.\n"
+                "Open Google Cloud Console → Generative AI → Models and pick a model you have access to, then set `MODEL_NAME` accordingly."
+            )
+        else:
+            st.error(f"Error connecting to Gemini API: {e}")
         return f"Error connecting to Gemini API: {e}"
 
 # Streamlit UI Construction
