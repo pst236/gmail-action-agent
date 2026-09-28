@@ -11,10 +11,6 @@ except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-# Your existing code starts here
-import streamlit as st
-# ... remainder of your code
-
 import streamlit as st
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -49,8 +45,21 @@ def authenticate_gmail():
             token.write(creds.to_json())
     return build('gmail', 'v1', credentials=creds)
 
+def extract_plain_text(part):
+    """Recursively finds the first text/plain body in a (possibly nested) MIME part."""
+    if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
+        return base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='replace')
+    for sub_part in part.get('parts', []):
+        text = extract_plain_text(sub_part)
+        if text:
+            return text
+    return ""
+
 def fetch_recent_emails(service):
-    """Fetches text content of emails received in the last 24 hours."""
+    """Fetches text content of emails received in the last 24 hours.
+
+    Returns a tuple of (emails with readable text, number of messages fetched).
+    """
     # Calculate time 24 hours ago
     time_24h_ago = datetime.datetime.now() - datetime.timedelta(days=1)
     epoch_24h_ago = int(time_24h_ago.timestamp())
@@ -63,7 +72,8 @@ def fetch_recent_emails(service):
         messages = results.get('messages', [])
         
         email_data = []
-        for msg in messages[:20]: # Limit to top 20 emails to avoid rate limits
+        messages = messages[:20] # Limit to top 20 emails to avoid rate limits
+        for msg in messages:
             msg_details = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
             payload = msg_details.get('payload', {})
             headers = payload.get('headers', [])
@@ -73,21 +83,14 @@ def fetch_recent_emails(service):
             sender = next((h['value'] for h in headers if h['name'].lower() == 'from'), 'Unknown Sender')
             
             # Extract Body Text
-            body = ""
-            if 'parts' in payload:
-                for part in payload['parts']:
-                    if part['mimeType'] == 'text/plain' and 'data' in part['body']:
-                        body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
-                        break
-            elif 'data' in payload.get('body', {}):
-                body = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8')
-                
+            body = extract_plain_text(payload)
+
             if body:
                 email_data.append({"sender": sender, "subject": subject, "body": body[:1500]}) # Truncate body
-        return email_data
+        return email_data, len(messages)
     except Exception as e:
         st.error(f"Error fetching emails: {e}")
-        return []
+        return [], 0
 
 def extract_action_items(emails, api_key):
     """Uses Gemini API to synthesize and extract clear action items from emails."""
@@ -152,8 +155,11 @@ if st.button("Fetch and Analyze Emails", type="primary"):
             
         if gmail_service:
             with st.spinner("Fetching emails from the past 24 hours..."):
-                emails = fetch_recent_emails(gmail_service)
-                st.success(f"Successfully downloaded {len(emails)} recent emails.")
+                emails, fetched_count = fetch_recent_emails(gmail_service)
+                st.success(
+                    f"Fetched {fetched_count} recent emails; "
+                    f"{len(emails)} had readable text to analyze."
+                )
                 
             with st.spinner("Extracting action items with AI..."):
                 summary = extract_action_items(emails, gemini_key)
